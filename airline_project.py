@@ -21,22 +21,19 @@ for folder in ["bronze", "silver", "gold"]:
 # In the Bronze layer, raw data is ingested exactly as received.
 # This includes missing or invalid values (e.g., missing departure times, non-numeric delays).
 
-# 1. Branch Data (assumed relatively clean)
-branches = [
-    {"branch": "Branch_A", "city": "New York", "state": "NY"},
-    {"branch": "Branch_B", "city": "Los Angeles", "state": "CA"},
-    {"branch": "Branch_C", "city": "Chicago", "state": "IL"},
-    {"branch": "Branch_D", "city": "Atlanta", "state": "GA"},
-    {"branch": "Branch_E", "city": "Dallas", "state": "TX"}
-]
-df_branches = pd.DataFrame(branches)
-df_branches.to_csv("bronze/branches.csv", index=False)
-print("bronze/branches.csv generated.")
-
-# 2. Flight Data (with Dirty Data)
+# 1. Flight Data (with Dirty Data) + Gate
 num_flights = 1000  # Adjust as needed
 airports = ["JFK", "LAX", "ORD", "ATL", "DFW"]
-branch_list = [b["branch"] for b in branches]
+
+# Define a set of possible gates for each airport
+gates_by_airport = {
+    "JFK": [f"JFK_G{n}" for n in range(1, 11)],
+    "LAX": [f"LAX_G{n}" for n in range(1, 11)],
+    "ORD": [f"ORD_G{n}" for n in range(1, 11)],
+    "ATL": [f"ATL_G{n}" for n in range(1, 11)],
+    "DFW": [f"DFW_G{n}" for n in range(1, 11)]
+}
+
 flight_ids = [f"F{str(i).zfill(4)}" for i in range(1, num_flights + 1)]
 start_date = datetime(2023, 1, 1)
 end_date = datetime(2023, 12, 31)
@@ -46,25 +43,29 @@ departure_times = []
 arrival_times = []
 delay_minutes = []
 airport_choices = []
-branch_choices = []
+gate_choices = []
+
 for _ in range(num_flights):
     # Generate a normal departure and arrival time
     dep = start_date + timedelta(seconds=random.randint(0, total_seconds))
     dur = timedelta(hours=random.randint(1, 5))
     arr = dep + dur
-    
+
     # Introduce dirty data:
     # 5% chance: missing departure time (empty string)
     dep_str = "" if random.random() < 0.05 else dep.strftime("%Y-%m-%d %H:%M:%S")
-    
+
     # 5% chance: non-numeric delay_minutes (set to "error")
     delay = "error" if random.random() < 0.05 else random.randint(0, 60)
-    
+
+    airport_choice = random.choice(airports)
+    gate_choice = random.choice(gates_by_airport[airport_choice])
+
     departure_times.append(dep_str)
     arrival_times.append(arr.strftime("%Y-%m-%d %H:%M:%S"))
     delay_minutes.append(delay)
-    airport_choices.append(random.choice(airports))
-    branch_choices.append(random.choice(branch_list))
+    airport_choices.append(airport_choice)
+    gate_choices.append(gate_choice)
 
 df_flights = pd.DataFrame({
     "flight_id": flight_ids,
@@ -72,12 +73,12 @@ df_flights = pd.DataFrame({
     "arrival_time": arrival_times,
     "delay_minutes": delay_minutes,
     "airport": airport_choices,
-    "branch": branch_choices
+    "gate": gate_choices
 })
 df_flights.to_csv("bronze/flights.csv", index=False)
 print(f"bronze/flights.csv generated with {num_flights} records.")
 
-# 3. Sensor Data (Simulated Streaming with Dirty Data)
+# 2. Sensor Data (Simulated Streaming with Dirty Data)
 sensor_types = [
     {"type": "Engine Temperature", "min": 500, "max": 700},
     {"type": "Fuel Level", "min": 20, "max": 100},
@@ -114,7 +115,7 @@ df_sensors = pd.DataFrame(sensor_records)
 df_sensors.to_csv("bronze/sensors.csv", index=False)
 print(f"bronze/sensors.csv generated with {len(df_sensors)} records.")
 
-# 4. Customer Data (SCD Type 2) - Assumed Clean
+# 3. Customer Data (SCD Type 2) - Assumed Clean
 num_customers = 500
 first_names = ["John", "Jane", "Alice", "Bob", "Charlie", "Diana", "Eve", "Frank", "Grace", "Hank"]
 last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Miller", "Davis", "Garcia", "Rodriguez", "Wilson"]
@@ -166,7 +167,7 @@ df_customers = pd.DataFrame(customer_records)
 df_customers.to_csv("bronze/customers.csv", index=False)
 print(f"bronze/customers.csv generated with {len(df_customers)} records.")
 
-# 5. Bookings Data (Marketing Data Mart)
+# 4. Bookings Data (Marketing Data Mart)
 #    This table links customers to flights and includes booking details.
 booking_channels = ["Online", "TravelAgency", "MobileApp"]
 booking_records = []
@@ -200,7 +201,8 @@ df_bookings = pd.DataFrame(booking_records)
 df_bookings.to_csv("bronze/bookings.csv", index=False)
 print(f"bronze/bookings.csv generated with {len(df_bookings)} records.")
 
-# 6. Weather Events Data (Synthetic for Flight Routes, including wind direction)
+# 5. Weather Events Data (Synthetic for Flight Routes, including wind direction)
+weather_conditions = ["Clear", "Sunny", "Cloudy", "Rain", "Storm"]
 weather_events = []
 wind_directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 for idx, row in df_flights.iterrows():
@@ -228,7 +230,7 @@ for idx, row in df_flights.iterrows():
         wind_speed = round(random.uniform(0, 150), 1)
         direction = random.choice(wind_directions)
         condition = random.choice(weather_conditions)
-        # 5% chance: missing temperature or wind
+        # 5% chance: missing temperature or wind_speed
         if random.random() < 0.05:
             temperature = None
         if random.random() < 0.05:
@@ -255,7 +257,6 @@ print(f"bronze/weather_events.csv generated with {len(df_weather_events)} record
 
 # Load Bronze CSV files
 df_flights        = pd.read_csv("bronze/flights.csv")
-df_branches       = pd.read_csv("bronze/branches.csv")
 df_customers      = pd.read_csv("bronze/customers.csv")
 df_bookings       = pd.read_csv("bronze/bookings.csv")
 df_sensors        = pd.read_csv("bronze/sensors.csv")
@@ -273,25 +274,19 @@ df_flights = df_flights.dropna(subset=["delay_minutes"])
 # Derive flight_date from departure_time (so we can still use it if needed downstream)
 df_flights["flight_date"] = df_flights["departure_time"].dt.date
 
-# Enrich: Merge flights with branch details (join on "branch")
-df_silver = pd.merge(df_flights, df_branches, on="branch", how="left")
+# At this point, df_flights has columns:
+# [flight_id, departure_time, arrival_time, delay_minutes, airport, gate, flight_date]
 
 # Enrich: Link flights to bookings (Data Mart)
 # Convert booking_date to datetime.date
 df_bookings["booking_date"] = pd.to_datetime(df_bookings["booking_date"], errors='coerce').dt.date
 
-# Join bookings to customers dimension on SCD: booking_date between effective_date and end_date
+# Convert effective_date and end_date in customers to datetime.date
 df_customers["effective_date"] = pd.to_datetime(df_customers["effective_date"], errors='coerce').dt.date
-df_customers["end_date"] = pd.to_datetime(df_customers["end_date"], errors='coerce').dt.date
+df_customers["end_date"]       = pd.to_datetime(df_customers["end_date"], errors='coerce').dt.date
 
-# Merge bookings with customer loyalty_tier based on booking_date falling in [effective_date, end_date or NULL]
-df_bookings = pd.merge(
-    df_bookings,
-    df_customers,
-    on="customer_id",
-    how="left"
-)
-# Keep only the customer row where booking_date is between effective_date and end_date (or if end_date is null)
+# Merge bookings with customer loyalty_tier based on booking_date between effective_date and end_date
+df_bookings = pd.merge(df_bookings, df_customers, on="customer_id", how="left")
 df_bookings = df_bookings[
     (df_bookings["booking_date"] >= df_bookings["effective_date"]) &
     ((df_bookings["end_date"].isna()) | (df_bookings["booking_date"] <= df_bookings["end_date"]))
@@ -305,7 +300,7 @@ booking_agg = df_bookings.groupby("flight_id").agg(
 ).reset_index()
 
 # Merge booking aggregates into Silver
-df_silver = pd.merge(df_silver, booking_agg, on="flight_id", how="left")
+df_silver = pd.merge(df_flights, booking_agg, on="flight_id", how="left")
 
 # Enrich: Aggregate Sensor Data - Compute average sensor_value for each sensor type per flight
 sensor_agg = df_sensors.groupby(["flight_id", "sensor_type"])["sensor_value"].mean().unstack()
@@ -325,13 +320,13 @@ df_weather_merged = df_weather_merged[
 
 # Aggregate weather events per flight
 weather_agg = df_weather_merged.groupby("flight_id").agg(
-    avg_temperature_flight    = ("temperature", "mean"),
-    max_temperature_flight    = ("temperature", "max"),
-    avg_wind_speed_flight     = ("wind_speed", "mean"),
-    max_wind_speed_flight     = ("wind_speed", "max"),
-    predominant_wind_direction= ("wind_direction", lambda x: x.mode().iloc[0] if not x.mode().empty else None),
-    pct_rain_events           = ("weather_condition", lambda x: np.mean(x == "Rain")),
-    num_weather_points        = ("weather_condition", "count")
+    avg_temperature_flight     = ("temperature", "mean"),
+    max_temperature_flight     = ("temperature", "max"),
+    avg_wind_speed_flight      = ("wind_speed", "mean"),
+    max_wind_speed_flight      = ("wind_speed", "max"),
+    predominant_wind_direction = ("wind_direction", lambda x: x.mode().iloc[0] if not x.mode().empty else None),
+    pct_rain_events            = ("weather_condition", lambda x: np.mean(x == "Rain")),
+    num_weather_points         = ("weather_condition", "count")
 ).reset_index()
 
 # Merge weather aggregates into Silver
@@ -346,8 +341,8 @@ print("silver/silver_flights.csv generated.")
 #########################################
 # In the Gold layer, we compute business metrics and prepare an ML feature table.
 
-# Gold KPI: Compute Average Delay per Airport/Branch and Total Flights
-gold_kpis = df_silver.groupby(["airport", "branch"]).agg(
+# Gold KPI: Compute Average Delay per Airport/Gate and Total Flights
+gold_kpis = df_silver.groupby(["airport", "gate"]).agg(
     avg_delay     = ("delay_minutes", "mean"),
     total_flights = ("flight_id", "count")
 ).reset_index()
@@ -362,7 +357,7 @@ df_silver["delay_flag"]  = (df_silver["delay_minutes"] > 30).astype(int)
 
 # Select key columns for the ML feature table.
 ml_features = df_silver[[
-    "flight_id", "airport", "branch", "delay_minutes", "delay_flag",
+    "flight_id", "airport", "gate", "delay_minutes", "delay_flag",
     "hour_of_day", "day_of_week",
     "Engine Temperature", "Fuel Level", "Vibration", "Air Pressure", "Airspeed",
     "avg_temperature_flight", "max_temperature_flight",
@@ -381,7 +376,7 @@ def create_dashboard(output_file="gold/dashboard_mockup.png"):
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
     # Create a 2x2 subplot layout.
-    # - Row 1, Col 1: Bar chart (Avg Delay per Airport/Branch)
+    # - Row 1, Col 1: Bar chart (Avg Delay per Airport/Gate)
     # - Row 1, Col 2: KPI indicators (Total Flights, Sensor Anomalies)
     # - Row 2, Col 1: Line chart (Delay Trend Over Time)
     # - Row 2, Col 2: Text-based Alerts & Recommendations panel
@@ -394,7 +389,7 @@ def create_dashboard(output_file="gold/dashboard_mockup.png"):
             [{"type": "xy"}, {"type": "xy"}]
         ],
         subplot_titles=(
-            "Avg Delay per Airport/Branch",
+            "Avg Delay per Airport/Gate",
             "KPI Indicators",
             "Delay Trend Over Time",
             "Alerts & Recommendations"
@@ -402,12 +397,13 @@ def create_dashboard(output_file="gold/dashboard_mockup.png"):
     )
 
     # -----------------------------
-    # 1. Bar Chart - Avg Delay per Airport/Branch
+    # 1. Bar Chart - Avg Delay per Airport/Gate
     airports_plot = ["JFK", "LAX", "ORD", "ATL", "DFW"]
+    gates_plot    = ["JFK_G1", "LAX_G1", "ORD_G1", "ATL_G1", "DFW_G1"]  # sample gates
     avg_delay_plot = [12, 18, 15, 22, 10]  # sample average delay
     fig.add_trace(
         go.Bar(
-            x=airports_plot,
+            x=[f"{a}/{g}" for a, g in zip(airports_plot, gates_plot)],
             y=avg_delay_plot,
             marker_color="royalblue",
             name="Avg Delay (min)"
@@ -483,7 +479,7 @@ def create_dashboard(output_file="gold/dashboard_mockup.png"):
     # -----------------------------
     # Global Filters Annotation
     fig.add_annotation(
-        text="<b>Global Filters:</b> [Date Range]  [Airport ▼]  [Branch ▼]  [Flight Status ▼]",
+        text="<b>Global Filters:</b> [Date Range]  [Airport ▼]  [Gate ▼]  [Flight Status ▼]",
         xref="paper", yref="paper",
         x=0.5, y=1.15,
         showarrow=False,
