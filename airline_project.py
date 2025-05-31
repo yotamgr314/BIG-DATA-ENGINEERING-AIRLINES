@@ -1,7 +1,19 @@
+import os
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import random
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+# ---------------------------------------------------
+# Create directories if they don't exist:
+#   - bronze/      (raw ingested data)
+#   - silver/      (cleaned & enriched data)
+#   - gold/        (aggregated KPIs & ML features)
+# ---------------------------------------------------
+for folder in ["bronze", "silver", "gold"]:
+    os.makedirs(folder, exist_ok=True)
 
 #########################################
 # BRONZE LAYER - RAW DATA INGESTION (Dirty Data)
@@ -18,8 +30,8 @@ branches = [
     {"branch": "Branch_E", "city": "Dallas", "state": "TX"}
 ]
 df_branches = pd.DataFrame(branches)
-df_branches.to_csv("branches.csv", index=False)
-print("branches.csv generated.")
+df_branches.to_csv("bronze/branches.csv", index=False)
+print("bronze/branches.csv generated.")
 
 # 2. Flight Data (with Dirty Data)
 num_flights = 1000  # Adjust as needed
@@ -34,6 +46,8 @@ departure_times = []
 arrival_times = []
 delay_minutes = []
 flight_dates = []
+airport_choices = []
+branch_choices = []
 for _ in range(num_flights):
     # Generate a normal departure and arrival time
     dep = start_date + timedelta(seconds=random.randint(0, total_seconds))
@@ -51,18 +65,20 @@ for _ in range(num_flights):
     arrival_times.append(arr.strftime("%Y-%m-%d %H:%M:%S"))
     delay_minutes.append(delay)
     flight_dates.append(dep.date().strftime("%Y-%m-%d"))
+    airport_choices.append(random.choice(airports))
+    branch_choices.append(random.choice(branch_list))
 
 df_flights = pd.DataFrame({
     "flight_id": flight_ids,
     "departure_time": departure_times,
     "arrival_time": arrival_times,
     "delay_minutes": delay_minutes,
-    "airport": [random.choice(airports) for _ in range(num_flights)],
-    "branch": [random.choice(branch_list) for _ in range(num_flights)],
+    "airport": airport_choices,
+    "branch": branch_choices,
     "flight_date": flight_dates
 })
-df_flights.to_csv("flights.csv", index=False)
-print("flights.csv generated with", num_flights, "records.")
+df_flights.to_csv("bronze/flights.csv", index=False)
+print(f"bronze/flights.csv generated with {num_flights} records.")
 
 # 3. Sensor Data (Simulated Streaming with Dirty Data)
 sensor_types = [
@@ -98,8 +114,8 @@ for fid, dep, arr in zip(df_flights["flight_id"], df_flights["departure_time"], 
                 "event_time": event_time.strftime("%Y-%m-%d %H:%M:%S")
             })
 df_sensors = pd.DataFrame(sensor_records)
-df_sensors.to_csv("sensors.csv", index=False)
-print("sensors.csv generated with", len(df_sensors), "records.")
+df_sensors.to_csv("bronze/sensors.csv", index=False)
+print(f"bronze/sensors.csv generated with {len(df_sensors)} records.")
 
 # 4. Weather Data (Synthetic with Dirty Data)
 weather_records = []
@@ -119,8 +135,8 @@ for date in date_range:
             "weather_condition": condition
         })
 df_weather = pd.DataFrame(weather_records)
-df_weather.to_csv("weather.csv", index=False)
-print("weather.csv generated with", len(df_weather), "records.")
+df_weather.to_csv("bronze/weather.csv", index=False)
+print(f"bronze/weather.csv generated with {len(df_weather)} records.")
 
 # 5. Customer Data (SCD Type 2) - Assumed Clean
 num_customers = 500
@@ -171,8 +187,53 @@ for i in range(1, num_customers + 1):
         }
         customer_records.append(record)
 df_customers = pd.DataFrame(customer_records)
-df_customers.to_csv("customers.csv", index=False)
-print("customers.csv generated with", len(df_customers), "records.")
+df_customers.to_csv("bronze/customers.csv", index=False)
+print(f"bronze/customers.csv generated with {len(df_customers)} records.")
+
+# 6. Weather Events Data (Synthetic for Flight Routes)
+weather_events = []
+for idx, row in df_flights.iterrows():
+    fid = row["flight_id"]
+    dep = row["departure_time"]
+    arr = row["arrival_time"]
+    # Parse departure/arrival
+    try:
+        dep_dt = datetime.strptime(dep, "%Y-%m-%d %H:%M:%S")
+        arr_dt = datetime.strptime(arr, "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        continue
+    # Generate a few sample points along the route (3-6 points)
+    num_points = random.randint(3, 6)
+    route_duration = (arr_dt - dep_dt).total_seconds()
+    for i in range(num_points):
+        # Random time between departure and arrival
+        rand_seconds = random.randint(0, int(route_duration))
+        evt_time = dep_dt + timedelta(seconds=rand_seconds)
+        # Random coordinates simulated between two airports (for simplicity)
+        latitude = round(random.uniform(20.0, 60.0), 4)
+        longitude = round(random.uniform(-130.0, -60.0), 4)
+        altitude = round(random.uniform(3000, 40000), 2)  # in feet
+        temperature = round(random.uniform(-20, 30), 1)
+        wind_speed = round(random.uniform(0, 150), 1)
+        condition = random.choice(weather_conditions)
+        # 5% chance: missing temperature or wind
+        if random.random() < 0.05:
+            temperature = None
+        if random.random() < 0.05:
+            wind_speed = None
+        weather_events.append({
+            "flight_id": fid,
+            "event_time": evt_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "latitude": latitude,
+            "longitude": longitude,
+            "altitude": altitude,
+            "temperature": temperature,
+            "wind_speed": wind_speed,
+            "weather_condition": condition
+        })
+df_weather_events = pd.DataFrame(weather_events)
+df_weather_events.to_csv("bronze/weather_events.csv", index=False)
+print(f"bronze/weather_events.csv generated with {len(df_weather_events)} records.")
 
 #########################################
 # SILVER LAYER - CLEANED & ENRICHED DATA
@@ -180,10 +241,11 @@ print("customers.csv generated with", len(df_customers), "records.")
 # In the Silver layer, the raw Bronze data is cleaned, standardized, and enriched.
 
 # Load Bronze CSV files
-df_flights = pd.read_csv("flights.csv")
-df_branches = pd.read_csv("branches.csv")
-df_weather = pd.read_csv("weather.csv")
-df_sensors = pd.read_csv("sensors.csv")
+df_flights = pd.read_csv("bronze/flights.csv")
+df_branches = pd.read_csv("bronze/branches.csv")
+df_weather = pd.read_csv("bronze/weather.csv")
+df_sensors = pd.read_csv("bronze/sensors.csv")
+df_weather_events = pd.read_csv("bronze/weather_events.csv")
 
 # Standardize and Convert Data Types in Flights Data
 df_flights["departure_time"] = pd.to_datetime(df_flights["departure_time"], errors='coerce')
@@ -208,9 +270,32 @@ sensor_agg.reset_index(inplace=True)
 # Merge sensor aggregates into the Silver flight data
 df_silver = pd.merge(df_silver, sensor_agg, on="flight_id", how="left")
 
+# Enrich: Process Weather Events - Convert types
+df_weather_events["event_time"] = pd.to_datetime(df_weather_events["event_time"], errors='coerce')
+# Join flights with weather events where event_time between departure and arrival
+df_flights_times = df_silver[["flight_id", "departure_time", "arrival_time"]]
+df_weather_merged = pd.merge(df_flights_times, df_weather_events, on="flight_id", how="inner")
+df_weather_merged = df_weather_merged[
+    (df_weather_merged["event_time"] >= df_weather_merged["departure_time"]) &
+    (df_weather_merged["event_time"] <= df_weather_merged["arrival_time"])
+].copy()
+
+# Aggregate weather events per flight
+weather_agg = df_weather_merged.groupby("flight_id").agg(
+    avg_temperature_flight=("temperature", "mean"),
+    max_temperature_flight=("temperature", "max"),
+    avg_wind_speed_flight=("wind_speed", "mean"),
+    max_wind_speed_flight=("wind_speed", "max"),
+    pct_rain_events=("weather_condition", lambda x: np.mean(x == "Rain")),
+    num_weather_points=("weather_condition", "count")
+).reset_index()
+
+# Merge weather aggregates into Silver
+df_silver = pd.merge(df_silver, weather_agg, on="flight_id", how="left")
+
 # Save the Silver layer dataset
-df_silver.to_csv("silver_flights.csv", index=False)
-print("silver_flights.csv generated.")
+df_silver.to_csv("silver/silver_flights.csv", index=False)
+print("silver/silver_flights.csv generated.")
 
 #########################################
 # GOLD LAYER - AGGREGATED BUSINESS METRICS & ML FEATURE TABLE
@@ -222,36 +307,39 @@ gold_kpis = df_silver.groupby(["airport", "branch"]).agg(
     avg_delay=("delay_minutes", "mean"),
     total_flights=("flight_id", "count")
 ).reset_index()
-gold_kpis.to_csv("gold_kpis.csv", index=False)
-print("gold_kpis.csv generated.")
+gold_kpis.to_csv("gold/gold_kpis.csv", index=False)
+print("gold/gold_kpis.csv generated.")
 
 # Gold ML Feature Table:
 # Derive additional time-based features from departure_time.
 df_silver["hour_of_day"] = df_silver["departure_time"].dt.hour
 df_silver["day_of_week"] = df_silver["departure_time"].dt.dayofweek
+df_silver["delay_flag"] = (df_silver["delay_minutes"] > 30).astype(int)
 
 # Select key columns for the ML feature table.
-# Ensure the following columns appear exactly as required:
-# flight_id, airport, branch, delay_minutes, hour_of_day, day_of_week,
-# Engine Temperature, Fuel Level, Vibration, Air Pressure, Airspeed, temperature, weather_condition
 ml_features = df_silver[[
-    "flight_id", "airport", "branch", "delay_minutes", "hour_of_day", "day_of_week",
+    "flight_id", "airport", "branch", "delay_minutes", "delay_flag",
+    "hour_of_day", "day_of_week",
     "Engine Temperature", "Fuel Level", "Vibration", "Air Pressure", "Airspeed",
-    "temperature", "weather_condition"
+    "avg_temperature_flight", "max_temperature_flight",
+    "avg_wind_speed_flight", "max_wind_speed_flight",
+    "pct_rain_events", "num_weather_points"
 ]]
-ml_features.to_csv("gold_ml_features.csv", index=False)
-print("gold_ml_features.csv generated.")
+ml_features.to_csv("gold/gold_ml_features.csv", index=False)
+print("gold/gold_ml_features.csv generated.")
 
+#########################################
+# OPTIONAL: Create Dashboard Mockup as PNG
+#########################################
+def create_dashboard(output_file="gold/dashboard_mockup.png"):
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-
-def create_dashboard(output_file="dashboard_mockup.png"):
     # Create a 2x2 subplot layout.
-    # - Row 1, Col 1: XY type for a bar chart (Avg Delay per Airport/Branch)
-    # - Row 1, Col 2: Domain type for KPI indicators (split side-by-side)
-    # - Row 2, Col 1: XY type for a line chart (Delay Trend Over Time)
-    # - Row 2, Col 2: XY type for a text-based Alerts & Recommendations panel
+    # - Row 1, Col 1: Bar chart (Avg Delay per Airport/Branch)
+    # - Row 1, Col 2: KPI indicators (Total Flights, Sensor Anomalies)
+    # - Row 2, Col 1: Line chart (Delay Trend Over Time)
+    # - Row 2, Col 2: Text-based Alerts & Recommendations panel
     fig = make_subplots(
         rows=2, cols=2,
         column_widths=[0.6, 0.4],
@@ -270,6 +358,7 @@ def create_dashboard(output_file="dashboard_mockup.png"):
 
     # -----------------------------
     # 1. Bar Chart - Avg Delay per Airport/Branch
+    # (לדוגמה, נתוני הדגמה סטטיים)
     # -----------------------------
     airports = ["JFK", "LAX", "ORD", "ATL", "DFW"]
     avg_delay = [12, 18, 15, 22, 10]  # sample average delay in minutes
@@ -286,19 +375,18 @@ def create_dashboard(output_file="dashboard_mockup.png"):
     # -----------------------------
     # 2. KPI Indicators - Total Flights and Sensor Anomalies
     # -----------------------------
-    # Using a "domain" subplot split horizontally into two sections.
-    # Indicator for Total Flights (left half)
     fig.add_trace(
         go.Indicator(
             mode="number",
-            value=1200,  # sample total flights
+            value=gold_kpis["total_flights"].sum(),  # total from gold_kpis
             title={"text": "Total Flights", "font": {"size": 14}},
             number={"font": {"size": 32}},
             domain={"x": [0, 0.5], "y": [0, 1]}
         ),
         row=1, col=2
     )
-    # Indicator for Sensor Anomalies (right half)
+    # בעמודה השנייה של אותם ה-domain נציג לדוגמה Sensor Anomalies בספרייה נפרדת
+    # לצורך הפשטות נשתמש בערך דמיוני
     fig.add_trace(
         go.Indicator(
             mode="number",
@@ -312,6 +400,7 @@ def create_dashboard(output_file="dashboard_mockup.png"):
 
     # -----------------------------
     # 3. Line Chart - Delay Trend Over Time
+    # (לדוגמה, על סמך דגימת זמן מדומה)
     # -----------------------------
     days = list(range(1, 11))  # e.g., 10 days placeholder
     delay_trend = [15, 18, 13, 20, 22, 19, 14, 17, 21, 16]
@@ -329,12 +418,10 @@ def create_dashboard(output_file="dashboard_mockup.png"):
     # -----------------------------
     # 4. Text Panel - Alerts & Recommendations
     # -----------------------------
-    # Use an invisible scatter trace to create a placeholder for text.
     fig.add_trace(
         go.Scatter(x=[0], y=[0], mode="markers", marker_opacity=0, showlegend=False),
         row=2, col=2
     )
-    # Hide axes in this subplot
     fig.update_xaxes(visible=False, row=2, col=2)
     fig.update_yaxes(visible=False, row=2, col=2)
     alerts_text = (
@@ -371,15 +458,21 @@ def create_dashboard(output_file="dashboard_mockup.png"):
     # Global Title & Layout
     # -----------------------------
     fig.update_layout(
-        title={"text": "Airline Operations Dashboard", "x": 0.5, "xanchor": "center", "font": {"size": 20}},
+        title={
+            "text": "Airline Operations Dashboard",
+            "x": 0.5,
+            "xanchor": "center",
+            "font": {"size": 20}
+        },
         plot_bgcolor="#F9F9F9",
         paper_bgcolor="#F9F9F9",
-        margin=dict(l=50, r=50, t=100, b=50)
+        margin=dict(l=50, r=50, t=120, b=50)
     )
 
-    # Save the dashboard as a PNG file
+    # Save the dashboard as a PNG file in the gold folder
     fig.write_image(output_file, scale=2)
     print(f"Dashboard mockup saved as {output_file}")
 
 if __name__ == "__main__":
+    # אנחנו שולחים את הפונקציה של Dashboard בסוף, אם נריץ את הקובץ כמסקריפט
     create_dashboard()
