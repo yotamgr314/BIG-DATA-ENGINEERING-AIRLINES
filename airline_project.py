@@ -19,7 +19,8 @@ for folder in ["bronze", "silver", "gold"]:
 
 # 1. SCD Type 2: ticketPrices.csv (fare_classes)
 fare_records = []
-fare_classes = ["Y", "W", "F"]  # Economy, Premium, First
+# Updated fare_class_id values:
+fare_classes = ["Economy", "Premium", "First class"]
 start_base = datetime(2022, 1, 1)
 for fc in fare_classes:
     eff = start_base
