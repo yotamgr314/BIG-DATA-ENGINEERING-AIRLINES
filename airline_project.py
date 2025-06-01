@@ -271,21 +271,20 @@ df_flights = df_flights.dropna(subset=["departure_time", "arrival_time"])
 df_flights["delay_minutes"] = pd.to_numeric(df_flights["delay_minutes"], errors='coerce')
 df_flights = df_flights.dropna(subset=["delay_minutes"])
 
-# Derive flight_date from departure_time (so we can still use it if needed downstream)
+# Derive flight_date from departure_time
 df_flights["flight_date"] = df_flights["departure_time"].dt.date
 
-# At this point, df_flights has columns:
-# [flight_id, departure_time, arrival_time, delay_minutes, airport, gate, flight_date]
+# Calculate flight_duration in minutes
+df_flights["flight_duration"] = (
+    (df_flights["arrival_time"] - df_flights["departure_time"])
+    .dt.total_seconds() / 60
+)
 
-# Enrich: Link flights to bookings (Data Mart)
-# Convert booking_date to datetime.date
+# 1. Enrich: Link flights to bookings (Data Mart)
 df_bookings["booking_date"] = pd.to_datetime(df_bookings["booking_date"], errors='coerce').dt.date
-
-# Convert effective_date and end_date in customers to datetime.date
 df_customers["effective_date"] = pd.to_datetime(df_customers["effective_date"], errors='coerce').dt.date
 df_customers["end_date"]       = pd.to_datetime(df_customers["end_date"], errors='coerce').dt.date
 
-# Merge bookings with customer loyalty_tier based on booking_date between effective_date and end_date
 df_bookings = pd.merge(df_bookings, df_customers, on="customer_id", how="left")
 df_bookings = df_bookings[
     (df_bookings["booking_date"] >= df_bookings["effective_date"]) &
@@ -299,26 +298,19 @@ booking_agg = df_bookings.groupby("flight_id").agg(
     num_bookings           = ("booking_id", "count")
 ).reset_index()
 
-# Merge booking aggregates into Silver
-df_silver = pd.merge(df_flights, booking_agg, on="flight_id", how="left")
-
-# Enrich: Aggregate Sensor Data - Compute average sensor_value for each sensor type per flight
+# 2. Enrich: Aggregate Sensor Data (average per sensor_type per flight)
 sensor_agg = df_sensors.groupby(["flight_id", "sensor_type"])["sensor_value"].mean().unstack()
 sensor_agg.reset_index(inplace=True)
-# Merge sensor aggregates into the Silver flight data
-df_silver = pd.merge(df_silver, sensor_agg, on="flight_id", how="left")
 
-# Enrich: Process Weather Events - Convert types
+# 3. Enrich: Process Weather Events (only those between departure & arrival)
 df_weather_events["event_time"] = pd.to_datetime(df_weather_events["event_time"], errors='coerce')
-# Join flights with weather events where event_time between departure and arrival
-df_flights_times = df_silver[["flight_id", "departure_time", "arrival_time"]]
+df_flights_times = df_flights[["flight_id", "departure_time", "arrival_time"]]
 df_weather_merged = pd.merge(df_flights_times, df_weather_events, on="flight_id", how="inner")
 df_weather_merged = df_weather_merged[
     (df_weather_merged["event_time"] >= df_weather_merged["departure_time"]) &
     (df_weather_merged["event_time"] <= df_weather_merged["arrival_time"])
 ].copy()
 
-# Aggregate weather events per flight
 weather_agg = df_weather_merged.groupby("flight_id").agg(
     avg_temperature_flight     = ("temperature", "mean"),
     max_temperature_flight     = ("temperature", "max"),
@@ -329,8 +321,20 @@ weather_agg = df_weather_merged.groupby("flight_id").agg(
     num_weather_points         = ("weather_condition", "count")
 ).reset_index()
 
-# Merge weather aggregates into Silver
+# 4. Combine all Silver-level enrichments
+df_silver = df_flights.copy()
+df_silver = pd.merge(df_silver, booking_agg, on="flight_id", how="left")
+df_silver = pd.merge(df_silver, sensor_agg, on="flight_id", how="left")
 df_silver = pd.merge(df_silver, weather_agg, on="flight_id", how="left")
+
+# Fill NaN for aggregated fields with 0
+for col in ["total_ticket_revenue", "total_passenger_count", "num_bookings"]:
+    if col in df_silver:
+        df_silver[col] = df_silver[col].fillna(0)
+
+# Create delay_flag (>30 minutes) and on_time_flag (<=15 minutes)
+df_silver["delay_flag"] = (df_silver["delay_minutes"] > 30).astype(int)
+df_silver["on_time_flag"] = (df_silver["delay_minutes"] <= 15).astype(int)
 
 # Save the Silver layer dataset
 df_silver.to_csv("silver/silver_flights.csv", index=False)
@@ -339,32 +343,70 @@ print("silver/silver_flights.csv generated.")
 #########################################
 # GOLD LAYER - AGGREGATED BUSINESS METRICS & ML FEATURE TABLE
 #########################################
-# In the Gold layer, we compute business metrics and prepare an ML feature table.
+# In the Gold layer, we compute business metrics and prepare enriched CSVs.
 
-# Gold KPI: Compute Average Delay per Airport/Gate and Total Flights
+# 1. Gold KPI: Enriched metrics per Airport/Gate
 gold_kpis = df_silver.groupby(["airport", "gate"]).agg(
-    avg_delay     = ("delay_minutes", "mean"),
-    total_flights = ("flight_id", "count")
+    total_flights            = ("flight_id", "count"),
+    avg_delay                = ("delay_minutes", "mean"),
+    total_passenger_count    = ("total_passenger_count", "sum"),
+    total_ticket_revenue     = ("total_ticket_revenue", "sum"),
+    pct_flights_delayed_over_30 = ("delay_flag", "mean"),
+    pct_on_time_performance     = ("on_time_flag", "mean"),
+    avg_flight_duration      = ("flight_duration", "mean")
 ).reset_index()
+
+# Derive additional columns
+gold_kpis["avg_passengers_per_flight"] = (
+    gold_kpis["total_passenger_count"] / gold_kpis["total_flights"]
+).round(2)
+gold_kpis["avg_revenue_per_flight"] = (
+    gold_kpis["total_ticket_revenue"] / gold_kpis["total_flights"]
+).round(2)
+
+# Reorder columns for readability
+gold_kpis = gold_kpis[[
+    "airport", "gate",
+    "total_flights", "avg_delay",
+    "total_passenger_count", "avg_passengers_per_flight",
+    "total_ticket_revenue", "avg_revenue_per_flight",
+    "pct_flights_delayed_over_30", "pct_on_time_performance",
+    "avg_flight_duration"
+]]
+
 gold_kpis.to_csv("gold/gold_kpis.csv", index=False)
 print("gold/gold_kpis.csv generated.")
 
-# Gold ML Feature Table:
-# Derive additional time-based features from departure_time.
+# 2. Gold Time-Series KPI: Daily aggregates
+df_daily = df_silver.copy()
+df_daily["flight_day"] = df_daily["departure_time"].dt.date
+daily_agg = df_daily.groupby("flight_day").agg(
+    total_flights        = ("flight_id", "count"),
+    avg_delay            = ("delay_minutes", "mean"),
+    total_ticket_revenue = ("total_ticket_revenue", "sum"),
+    total_passengers     = ("total_passenger_count", "sum"),
+    pct_on_time          = ("on_time_flag", "mean")
+).reset_index()
+
+daily_agg.to_csv("gold/gold_kpis_daily.csv", index=False)
+print("gold/gold_kpis_daily.csv generated.")
+
+# 3. Gold ML Feature Table:
 df_silver["hour_of_day"] = df_silver["departure_time"].dt.hour
 df_silver["day_of_week"] = df_silver["departure_time"].dt.dayofweek
-df_silver["delay_flag"]  = (df_silver["delay_minutes"] > 30).astype(int)
 
-# Select key columns for the ML feature table.
 ml_features = df_silver[[
-    "flight_id", "airport", "gate", "delay_minutes", "delay_flag",
+    "flight_id", "airport", "gate",
+    "delay_minutes", "delay_flag", "on_time_flag",
     "hour_of_day", "day_of_week",
     "Engine Temperature", "Fuel Level", "Vibration", "Air Pressure", "Airspeed",
     "avg_temperature_flight", "max_temperature_flight",
     "avg_wind_speed_flight", "max_wind_speed_flight",
     "predominant_wind_direction", "pct_rain_events", "num_weather_points",
-    "total_ticket_revenue", "total_passenger_count", "num_bookings"
+    "total_ticket_revenue", "total_passenger_count", "num_bookings",
+    "flight_duration"
 ]]
+
 ml_features.to_csv("gold/gold_ml_features.csv", index=False)
 print("gold/gold_ml_features.csv generated.")
 
@@ -375,96 +417,103 @@ def create_dashboard(output_file="gold/dashboard_mockup.png"):
     # Ensure output directory exists
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
-    # Create a 2x2 subplot layout.
-    # - Row 1, Col 1: Bar chart (Avg Delay per Airport/Gate)
-    # - Row 1, Col 2: KPI indicators (Total Flights, Sensor Anomalies)
-    # - Row 2, Col 1: Line chart (Delay Trend Over Time)
-    # - Row 2, Col 2: Text-based Alerts & Recommendations panel
+    # Create a 3x2 layout for enriched KPIs and BI insights
     fig = make_subplots(
-        rows=2, cols=2,
+        rows=3, cols=2,
         column_widths=[0.6, 0.4],
-        row_heights=[0.55, 0.45],
+        row_heights=[0.3, 0.3, 0.4],
         specs=[
+            [{"type": "xy"}, {"type": "xy"}],
             [{"type": "xy"}, {"type": "domain"}],
             [{"type": "xy"}, {"type": "xy"}]
         ],
         subplot_titles=(
             "Avg Delay per Airport/Gate",
+            "Avg Passengers per Flight (Sample Gates)",
+            "Daily Avg Delay Trend",
             "KPI Indicators",
-            "Delay Trend Over Time",
+            "Delay vs. Flight Duration",
             "Alerts & Recommendations"
         )
     )
 
-    # -----------------------------
-    # 1. Bar Chart - Avg Delay per Airport/Gate
-    airports_plot = ["JFK", "LAX", "ORD", "ATL", "DFW"]
-    gates_plot    = ["JFK_G1", "LAX_G1", "ORD_G1", "ATL_G1", "DFW_G1"]  # sample gates
-    avg_delay_plot = [12, 18, 15, 22, 10]  # sample average delay
+    # 1. Bar Chart: Avg Delay per Airport/Gate (take top 5 by total_flights)
+    sample_ag = gold_kpis.sort_values("total_flights", ascending=False).head(5)
+    x_ag = [f"{row['airport']}/{row['gate']}" for _, row in sample_ag.iterrows()]
+    y_ag = sample_ag["avg_delay"]
     fig.add_trace(
-        go.Bar(
-            x=[f"{a}/{g}" for a, g in zip(airports_plot, gates_plot)],
-            y=avg_delay_plot,
-            marker_color="royalblue",
-            name="Avg Delay (min)"
-        ),
+        go.Bar(x=x_ag, y=y_ag, name="Avg Delay (min)"),
         row=1, col=1
     )
 
-    # -----------------------------
-    # 2. KPI Indicators - Total Flights and Sensor Anomalies
+    # 2. Bar Chart: Avg Passengers per Flight (same sample gates)
+    y_ppf = sample_ag["avg_passengers_per_flight"]
     fig.add_trace(
-        go.Indicator(
-            mode="number",
-            value=gold_kpis["total_flights"].sum(),
-            title={"text": "Total Flights", "font": {"size": 14}},
-            number={"font": {"size": 32}},
-            domain={"x": [0, 0.5], "y": [0, 1]}
-        ),
-        row=1, col=2
-    )
-    fig.add_trace(
-        go.Indicator(
-            mode="number",
-            value=7,  # sample sensor anomalies count
-            title={"text": "Sensor Anomalies", "font": {"size": 14}},
-            number={"font": {"size": 32}},
-            domain={"x": [0.5, 1], "y": [0, 1]}
-        ),
+        go.Bar(x=x_ag, y=y_ppf, marker_color="indianred", name="Avg Passengers"),
         row=1, col=2
     )
 
-    # -----------------------------
-    # 3. Line Chart - Delay Trend Over Time
-    days = list(range(1, 11))
-    delay_trend = [15, 18, 13, 20, 22, 19, 14, 17, 21, 16]
+    # 3. Line Chart: Daily Avg Delay Trend (last 10 days)
+    daily_sample = daily_agg.sort_values("flight_day").tail(10)
     fig.add_trace(
         go.Scatter(
-            x=days,
-            y=delay_trend,
+            x=daily_sample["flight_day"],
+            y=daily_sample["avg_delay"],
             mode="lines+markers",
-            line=dict(color="firebrick"),
-            name="Delay Trend"
+            name="Daily Avg Delay"
         ),
         row=2, col=1
     )
 
-    # -----------------------------
-    # 4. Text Panel - Alerts & Recommendations
+    # 4. KPI Indicators: Total Flights and Total Revenue (latest day)
+    total_flights = daily_agg["total_flights"].sum()
+    total_revenue = daily_agg["total_ticket_revenue"].sum()
     fig.add_trace(
-        go.Scatter(x=[0], y=[0], mode="markers", marker_opacity=0, showlegend=False),
+        go.Indicator(
+            mode="number",
+            value=total_flights,
+            title={"text": "Total Flights", "font": {"size": 16}},
+            number={"font": {"size": 32}},
+            domain={"x": [0, 0.5], "y": [0, 1]}
+        ),
         row=2, col=2
     )
-    fig.update_xaxes(visible=False, row=2, col=2)
-    fig.update_yaxes(visible=False, row=2, col=2)
+    fig.add_trace(
+        go.Indicator(
+            mode="number",
+            value=total_revenue,
+            title={"text": "Total Revenue", "font": {"size": 16}},
+            number={"font": {"size": 32}},
+            domain={"x": [0.5, 1], "y": [0, 1]}
+        ),
+        row=2, col=2
+    )
+
+    # 5. Scatter Chart: Delay vs Flight Duration (200-sample points)
+    sample_scatter = df_silver.sample(200, random_state=2)
+    fig.add_trace(
+        go.Scatter(
+            x=sample_scatter["flight_duration"],
+            y=sample_scatter["delay_minutes"],
+            mode="markers",
+            marker=dict(size=8, opacity=0.6),
+            name="Delay vs Duration"
+        ),
+        row=3, col=1
+    )
+
+    # 6. Text Panel: Alerts & Recommendations
+    fig.add_trace(
+        go.Scatter(x=[0], y=[0], mode="markers", marker_opacity=0, showlegend=False),
+        row=3, col=2
+    )
+    fig.update_xaxes(visible=False, row=3, col=2)
+    fig.update_yaxes(visible=False, row=3, col=2)
     alerts_text = (
         "<b>Live Alerts & Recommendations</b><br><br>"
-        "• Flight F002: Engine Temp Spike (685°C).<br>"
-        "&nbsp;&nbsp;Action: Schedule maintenance.<br><br>"
-        "• Flight F015: Low Fuel Level (22%).<br>"
-        "&nbsp;&nbsp;Action: Verify refueling.<br><br>"
-        "• Flight F023: Abnormal Vibration detected.<br>"
-        "&nbsp;&nbsp;Action: Inspect engine balance."
+        "• Identify gates where avg_delay > 20 min.<br>"
+        "• Focus maintenance on flights with flight_duration > 240 min.<br>"
+        "• Increase staffing on gates with low on-time performance."
     )
     fig.add_annotation(
         text=alerts_text,
@@ -473,31 +522,29 @@ def create_dashboard(output_file="gold/dashboard_mockup.png"):
         showarrow=False,
         align="left",
         font=dict(size=12),
-        row=2, col=2
+        row=3, col=2
     )
 
-    # -----------------------------
     # Global Filters Annotation
     fig.add_annotation(
-        text="<b>Global Filters:</b> [Date Range]  [Airport ▼]  [Gate ▼]  [Flight Status ▼]",
+        text="<b>Global Filters:</b> [Date Range]  [Airport ▼]  [Gate ▼]  [Metric ▼]",
         xref="paper", yref="paper",
-        x=0.5, y=1.15,
+        x=0.5, y=1.18,
         showarrow=False,
         font=dict(size=14)
     )
 
-    # -----------------------------
     # Global Title & Layout
     fig.update_layout(
         title={
-            "text": "Airline Operations Dashboard",
+            "text": "Airline Operations & Enriched KPIs Dashboard",
             "x": 0.5,
             "xanchor": "center",
-            "font": {"size": 20}
+            "font": {"size": 22}
         },
         plot_bgcolor="#F9F9F9",
         paper_bgcolor="#F9F9F9",
-        margin=dict(l=50, r=50, t=120, b=50)
+        margin=dict(l=40, r=40, t=140, b=40)
     )
 
     # Save the dashboard as a PNG file in the gold folder
