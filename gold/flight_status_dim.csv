@@ -1,0 +1,6 @@
+status_id,status
+1,Scheduled
+2,En Route
+3,Landed
+4,Delayed
+5,Cancelled
