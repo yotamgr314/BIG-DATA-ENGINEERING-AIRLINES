@@ -1,0 +1,6 @@
+STREAMING DATA - TICKETS & FLIGHTS.
+SCD TYPE 2 - TICKETS_PRICES.csv, FLIGHTS.CSV.
+STATIC TABLE - flights_routs.csv.
+LATE ARRIVAL - flights_report.csv.
+FACT TABLE - ***
+DIM TABLE - ***
