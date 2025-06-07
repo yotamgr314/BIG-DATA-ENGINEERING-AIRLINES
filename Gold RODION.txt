@@ -1,0 +1,62 @@
+gold_fact_monthly_performance_report.csv
+string:report_id PK,
+int:year,
+int:month,
+string:profit_id FK,
+string:flight_info_id FK,
+string:delay_id FK,
+string:metrics_id FK
+
+gold_dim_profit.csv
+string:profit_id PK,
+float:total_profit,
+float:profit_per_passenger,
+float:average_ticket_price
+
+gold_dim_flight_info.csv
+string:flight_info_id PK,
+float:total_flights,
+float:total_passengers_number,
+float:average_passengers_number_on_flight
+
+gold_dim_delay.csv
+string:delay_id PK,
+float:average_delay,
+float:minimal_delay,
+float:maximal_delay
+
+gold_dim_most_popular.csv
+string:metrics_id PK,
+string:most_popular_origin,
+string:most_popular_destination,
+string:most_popular_order_method
+
+
+gold_fact_ml_training.csv
+string:training_set_id PK,
+string:wether_id FK,
+string:route_id FK,
+string:boarding_data_id FK,
+float:delay_in_minutes (target)
+
+gold_dim_ml_weather.csv
+string:weather_id PK,
+float:average_height,
+float:average_temperature,
+float:average_humidity,
+float:average_wind_speed,
+float:average_wind_direction,
+string:most_common_condition,
+int:number_of_most_common_condition,
+
+gold_dim_ml_routes.csv
+string:route_id PK,
+string:airport_origin,
+string:airport_destination,
+float:time_of_flight,
+float:distance
+
+gold_dim_ml_bording_data.csv
+string:boarding_data_id PK,
+int:number_of_passengers,
+int:number_of_luggage
