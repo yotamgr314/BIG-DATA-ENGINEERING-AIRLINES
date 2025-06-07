@@ -7,26 +7,16 @@ import matplotlib.pyplot as plt
 # ——————————————
 df_gold = pd.read_csv("GOLD/gold_monthly_performance.csv")
 
+# silver_tickets.csv now already has ticket_class
 silver_tix = pd.read_csv(
     "SILVER/silver_tickets.csv",
     parse_dates=["booking_date"]
 )
 
-bronze_booked = pd.read_csv("BRONZE/booked_ticket.csv")
-
-# Merge to get ticket_class + price + flight + booking_date
-tix = (
-    silver_tix
-    .merge(
-        bronze_booked[["ticket_id","ticket_class"]],
-        on="ticket_id",
-        how="left"
-    )
-    .assign(
-        year=lambda df: df["booking_date"].dt.year,
-        month=lambda df: df["booking_date"].dt.month
-    )
-)
+# Build tix DataFrame straight from silver_tix
+tix = silver_tix.copy()
+tix["year"]  = tix["booking_date"].dt.year
+tix["month"] = tix["booking_date"].dt.month
 
 # ——————————————
 # 2) Streamlit UI
@@ -36,7 +26,11 @@ st.title("📊 Flight Analytics Dashboard (Gold Layer)")
 # ——————————————————————————————
 # A) Gold-layer Year filter & plots
 # ——————————————————————————————
-year_gold = st.selectbox("Select Year (Gold Data)", sorted(df_gold["year"].unique()), key="gold_year")
+year_gold = st.selectbox(
+    "Select Year (Gold Data)",
+    sorted(df_gold["year"].unique()),
+    key="gold_year"
+)
 df_year_gold = df_gold[df_gold["year"] == year_gold]
 
 st.subheader("✈️ Total Flights per Month")
@@ -70,7 +64,11 @@ st.subheader("💳 Most Profitable Ticket Class per Month")
 
 years_tix = sorted(tix["year"].unique())
 if years_tix:
-    year_tix = st.selectbox("Select Year (Ticket Revenue)", years_tix, key="ticket_year")
+    year_tix = st.selectbox(
+        "Select Year (Ticket Revenue)",
+        years_tix,
+        key="ticket_year"
+    )
     df_tix_year = tix[tix["year"] == year_tix]
 
     # Sum revenue by month & class
@@ -90,11 +88,10 @@ if years_tix:
         .reindex(columns=["Economy","Business","Premium"], fill_value=0)
     )
 
-    # Determine best class per month (blank if total_rev=0)
+    # Determine best class (blank if no revenue)
     total_rev  = pivot.max(axis=1)
     best_class = pivot.idxmax(axis=1).where(total_rev > 0, "")
 
-    # Build tidy table
     best = pd.DataFrame({
         "month": pivot.index,
         "best_class": best_class.values,
@@ -116,10 +113,11 @@ if all_flights:
     flight_choice = st.selectbox("Select Flight", all_flights, key="flight_id")
     fx = tix[tix["flight_id"] == flight_choice]
 
-    # Ensure all three classes are shown
-    counts = fx["ticket_class"] \
-        .value_counts() \
+    counts = (
+        fx["ticket_class"]
+        .value_counts()
         .reindex(["Economy","Business","Premium"], fill_value=0)
+    )
 
     st.write(f"**Flight ID:** {flight_choice}")
     st.bar_chart(counts)
