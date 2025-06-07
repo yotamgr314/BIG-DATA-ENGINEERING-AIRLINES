@@ -3,7 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # ——————————————
-# 1) Load all layers
+# 1) Load data
 # ——————————————
 df_gold = pd.read_csv("GOLD/gold_monthly_performance.csv")
 
@@ -34,31 +34,27 @@ tix = (
 st.title("📊 Flight Analytics Dashboard (Gold Layer)")
 
 # ——————————————————————————————
-# A) Year filter for ***gold*** dashboard
+# A) Gold-layer Year filter & plots
 # ——————————————————————————————
-year_gold = st.selectbox("Select Year (Gold Data)", sorted(df_gold["year"].unique()))
-year_gold_df = df_gold[df_gold["year"] == year_gold]
+year_gold = st.selectbox("Select Year (Gold Data)", sorted(df_gold["year"].unique()), key="gold_year")
+df_year_gold = df_gold[df_gold["year"] == year_gold]
 
-# … existing gold plots …
 st.subheader("✈️ Total Flights per Month")
 fig1, ax1 = plt.subplots()
-ax1.plot(year_gold_df["month"], year_gold_df["total_flights"], marker="o")
-ax1.set_xlabel("Month")
-ax1.set_ylabel("Total Flights")
+ax1.plot(df_year_gold["month"], df_year_gold["total_flights"], marker="o")
+ax1.set_xlabel("Month"); ax1.set_ylabel("Total Flights")
 st.pyplot(fig1)
 
 st.subheader("⏱ Average Delay per Month")
 fig2, ax2 = plt.subplots()
-ax2.plot(year_gold_df["month"], year_gold_df["average_delay"], marker="s")
-ax2.set_xlabel("Month")
-ax2.set_ylabel("Average Delay (min)")
+ax2.plot(df_year_gold["month"], df_year_gold["average_delay"], marker="s", color="orange")
+ax2.set_xlabel("Month"); ax2.set_ylabel("Average Delay (minutes)")
 st.pyplot(fig2)
 
 st.subheader("💰 Total Profit per Month")
 fig3, ax3 = plt.subplots()
-ax3.bar(year_gold_df["month"], year_gold_df["total_profit"])
-ax3.set_xlabel("Month")
-ax3.set_ylabel("Total Profit")
+ax3.bar(df_year_gold["month"], df_year_gold["total_profit"], color="green")
+ax3.set_xlabel("Month"); ax3.set_ylabel("Total Profit")
 st.pyplot(fig3)
 
 st.subheader("🌍 Most Popular Destinations")
@@ -67,9 +63,9 @@ st.bar_chart(df_gold["most_popular_destination"].value_counts())
 st.subheader("📱 Most Popular Order Methods")
 st.bar_chart(df_gold["most_popular_order_method"].value_counts())
 
-# ——————————————
-# B) Which ticket class is most profitable each month?
-# ——————————————
+# ——————————————————————————————
+# B) Most profitable ticket class per month
+# ——————————————————————————————
 st.subheader("💳 Most Profitable Ticket Class per Month")
 
 years_tix = sorted(tix["year"].unique())
@@ -77,6 +73,7 @@ if years_tix:
     year_tix = st.selectbox("Select Year (Ticket Revenue)", years_tix, key="ticket_year")
     df_tix_year = tix[tix["year"] == year_tix]
 
+    # Sum revenue by month & class
     rev_by_class = (
         df_tix_year
         .groupby(["month","ticket_class"])["ticket_price"]
@@ -84,7 +81,7 @@ if years_tix:
         .reset_index()
     )
 
-    # pivot into months×classes, ensure months 1–12 AND the three correct classes
+    # Pivot so months 1–12 appear and only the three real classes
     pivot = (
         rev_by_class
         .pivot(index="month", columns="ticket_class", values="ticket_price")
@@ -93,9 +90,11 @@ if years_tix:
         .reindex(columns=["Economy","Business","Premium"], fill_value=0)
     )
 
+    # Determine best class per month (blank if total_rev=0)
     total_rev  = pivot.max(axis=1)
     best_class = pivot.idxmax(axis=1).where(total_rev > 0, "")
 
+    # Build tidy table
     best = pd.DataFrame({
         "month": pivot.index,
         "best_class": best_class.values,
@@ -107,9 +106,9 @@ if years_tix:
 else:
     st.warning("No ticket data available.")
 
-# ——————————————
-# C) Per‐Flight Seat Breakdown
-# ——————————————
+# ——————————————————————————————
+# C) Seat breakdown per flight
+# ——————————————————————————————
 st.subheader("🪑 Seat Breakdown per Flight")
 
 all_flights = sorted(tix["flight_id"].unique())
@@ -117,30 +116,12 @@ if all_flights:
     flight_choice = st.selectbox("Select Flight", all_flights, key="flight_id")
     fx = tix[tix["flight_id"] == flight_choice]
 
-    # only these three classes exist now
-    all_classes = ["Economy","Business","Premium"]
-    counts     = fx["ticket_class"].value_counts().reindex(all_classes, fill_value=0)
+    # Ensure all three classes are shown
+    counts = fx["ticket_class"] \
+        .value_counts() \
+        .reindex(["Economy","Business","Premium"], fill_value=0)
 
     st.write(f"**Flight ID:** {flight_choice}")
     st.bar_chart(counts)
 else:
     st.warning("No flight tickets to show.")
-
-# ——————————————————————————————
-# C) Per-Flight Seat Breakdown
-# ——————————————————————————————
-st.subheader("🪑 Seat Breakdown per Flight")
-
-all_flights = sorted(tix["flight_id"].unique())
-if not all_flights:
-    st.warning("No flight tickets to show.")
-else:
-    flight_choice = st.selectbox("Select Flight", all_flights, key="flight_id")
-    fx = tix[tix["flight_id"] == flight_choice]
-
-    # ensure all classes are present
-    all_classes = ["First", "Business", "Economy"]
-    counts = fx["ticket_class"].value_counts().reindex(all_classes, fill_value=0)
-
-    st.write(f"**Flight ID:** {flight_choice}")
-    st.bar_chart(counts)
